@@ -1,0 +1,5 @@
+.claude
+.databricks
+node_modules
+package.json
+package-lock.json
