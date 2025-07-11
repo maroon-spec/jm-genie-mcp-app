@@ -3,3 +3,5 @@ pandas
 databricks-sdk
 mcp
 requests
+requests-oauthlib
+urllib3
