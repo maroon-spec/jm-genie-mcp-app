@@ -1,28 +1,30 @@
-# Genie MCP 問い合わせアプリ
+# Genie アドバイザーアプリ
 
-Databricks Genie MCPサーバーを使用して、データに対して自然言語で質問を行い、結果を表示するStreamlitアプリケーションです。
+Databricks Genie MCPサーバーを使用して、データに対して自然言語で質問を行い、結果を表示・分析するStreamlitアプリケーションです。
 
 ## 概要
 
-このアプリケーションは、[Databricks Genie MCPサーバー](https://docs.databricks.com/gcp/ja/generative-ai/agent-framework/mcp)を使用して、Unity Catalog内のテーブルに対して自然言語で質問を行い、構造化データから知見を得ることができます。
+このアプリケーションは、[Databricks Genie MCPサーバー](https://docs.databricks.com/gcp/ja/generative-ai/agent-framework/mcp)を使用して、Unity Catalog内のテーブルに対して自然言語で質問を行い、構造化データから知見を得ることができます。さらに、取得したデータをAIが分析し、ビジネス上の洞察を提供します。
 
 ## 機能
 
 - 🔍 **Genie MCPサーバーとの通信**: DatabricksのマネージドMCPサーバーを使用
 - 💬 **自然言語質問**: データに対して自然言語で質問
 - 📊 **結果表示**: テキスト回答とデータフレームの表示
-- 📈 **データ可視化**: 結果データの自動可視化（ラインチャート、バーチャート、散布図、ヒストグラム）
+- 📈 **データ可視化**: 結果データの自動可視化（ラインチャート、バーチャート、散布図、ヒストグラム、円グラフ）
+- 🤖 **AI分析**: LLMによるデータ分析とビジネス洞察の提供
+- 💭 **追加質問**: 分析結果に対するフォローアップ質問機能
+- 🔍 **実行クエリ表示**: Genieが実行したSQLクエリの確認機能
+- 📋 **統計情報**: データの基本統計、データ型、欠損値の情報表示
 - ⚙️ **設定可能**: Genie Space IDの設定
-- 📝 **サンプル質問**: よく使用される質問のテンプレート
-- 🔐 **複数認証方法**: ヘッダートークン、環境変数、手動入力に対応
-- 🐛 **デバッグ機能**: 問題の診断に役立つ詳細情報
 
 ## 前提条件
 
 1. **Databricksワークスペース**: アクセス可能なDatabricksワークスペース
 2. **Genieスペース**: 問い合わせを行いたいGenieスペースが設定済み
 3. **権限**: Genieスペースへのアクセス権限
-4. **Databricks CLI**: 認証設定済み
+4. **Model Serving Endpoint**: AI分析用のLLMエンドポイント（例：`databricks-claude-sonnet-4`）
+5. **Databricks CLI**: 認証設定済み
 
 ## 必要な権限
 
@@ -46,18 +48,48 @@ Genie MCPサーバーにアクセスするには、以下の権限が必要で�
 pip install -r requirements.txt
 ```
 
-### 2. Databricks CLIの設定
+必要なパッケージ：
+- `streamlit`
+- `pandas`
+- `databricks-sdk`
+- `requests`
+- `python-dotenv`
+- `mlflow`
 
-```bash
-databricks configure
+### 2. 環境変数の設定
+
+#### ローカル開発の場合
+`.env`ファイルを作成してください：
+
+```env
+DATABRICKS_HOST=https://your-workspace.azuredatabricks.net
+DATABRICKS_ACCESS_TOKEN=your-access-token
+SERVING_ENDPOINT=your-llm-endpoint-name
+STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 ```
 
-### 3. アクセストークンの生成
+#### Databricks Appsの場合
+`app.yaml`で環境変数を設定します：
 
-1. Databricksワークスペースにログイン
-2. 右上のユーザーアイコン → ユーザー設定
-3. アクセストークン → 新しいトークンを生成
-4. トークンを安全な場所に保存
+```yaml
+env:
+  - name: "DATABRICKS_HOST"
+    value: "https://your-workspace.azuredatabricks.net"
+  - name: "DATABRICKS_ACCESS_TOKEN"
+    valueFrom: "secret/databricks/access-token"
+  - name: "SERVING_ENDPOINT"
+    value: "your-llm-endpoint-name"
+```
+
+### 3. Databricks Secretsの設定
+
+```bash
+# シークレットスコープの作成
+databricks secrets create-scope --scope databricks
+
+# アクセストークンの設定
+databricks secrets put --scope databricks --key access-token
+```
 
 ### 4. Genie Space IDの取得
 
@@ -78,47 +110,51 @@ streamlit run app.py
 
 1. アプリケーションを作成:
 ```bash
-databricks apps create genie-mcp-query-app
+databricks apps create genie-advisor-app
 ```
 
 2. シークレットの設定:
 ```bash
-databricks secrets create-scope genie-mcp-app
-databricks secrets put-secret genie-mcp-app databricks-token --string-value "your-access-token"
+databricks secrets create-scope --scope databricks
+databricks secrets put --scope databricks --key access-token
 ```
 
 3. ソースコードをアップロード:
 ```bash
 DATABRICKS_USERNAME=$(databricks current-user me | jq -r .userName)
-databricks sync . "/Users/$DATABRICKS_USERNAME/genie-mcp-query-app"
-databricks apps deploy genie-mcp-query-app --source-code-path "/Workspace/Users/$DATABRICKS_USERNAME/genie-mcp-query-app"
+databricks sync . "/Users/$DATABRICKS_USERNAME/genie-advisor-app"
+databricks apps deploy genie-advisor-app --source-code-path "/Workspace/Users/$DATABRICKS_USERNAME/genie-advisor-app"
 ```
 
 ## アプリケーションの使用手順
 
 1. **Genie Space IDの設定**
-   - サイドバーでGenie Space IDを入力
+   - サイドバーでGenie Space IDを入力（デフォルト：`01efbd0fe8711ecd80e48dcbc4042f28`）
 
-2. **認証方法の選択**
-   - 自動検出、ヘッダートークン、環境変数、手動入力から選択
+2. **質問の入力**
+   - テキストエリアに自然言語で質問を入力
+   - 例：「月別の問い合わせ数」
 
-3. **接続テスト**
-   - 「接続テスト」ボタンでMCPサーバーとの接続を確認
+3. **質問の送信**
+   - 「🚀 質問を送信」ボタンをクリック
 
-4. **質問の入力**
-   - カスタム質問を入力するか、サンプル質問を選択
+4. **結果の確認**
+   - **データ表示**: 取得したデータのテーブル表示
+   - **可視化**: 各種チャート（ライン、バー、散布図、ヒストグラム、円グラフ）
+   - **実行クエリ**: Genieが実行したSQLクエリの確認
+   - **統計情報**: データの基本統計、データ型、欠損値情報
 
-5. **質問の送信**
-   - 「質問を送信」ボタンをクリック
+5. **AI分析の実行**
+   - 「分析を実行」ボタンをクリック
+   - AIがデータを分析してビジネス洞察を提供
 
-6. **結果の確認**
-   - テキスト回答の確認
-   - データフレームの表示
-   - データの可視化
+6. **追加質問**
+   - 分析結果に対してフォローアップ質問が可能
+   - チャット形式で対話的に分析を深掘り
 
 ## サンプル質問
 
-- "このデータセットの概要を教えてください"
+- "月別の問い合わせ数"
 - "売上データの傾向を分析してください"
 - "最も売上が高い商品は何ですか？"
 - "月別の売上推移を教えてください"
@@ -135,6 +171,8 @@ databricks apps deploy genie-mcp-query-app --source-code-path "/Workspace/Users/
 - **Databricks SDK**: Databricksワークスペースとの連携
 - **MCP (Model Context Protocol)**: 標準化されたツールアクセスプロトコル
 - **Pandas**: データ処理と可視化
+- **MLflow**: Model Serving Endpointとの通信
+- **python-dotenv**: 環境変数管理
 
 ### アーキテクチャ
 
@@ -144,6 +182,14 @@ databricks apps deploy genie-mcp-query-app --source-code-path "/Workspace/Users/
 │   App           │───▶│  Server          │───▶│  Tables         │
 │                 │    │                  │    │                 │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
+         │
+         │
+         ▼
+┌─────────────────┐
+│  Model Serving  │
+│  Endpoint       │
+│  (LLM)          │
+└─────────────────┘
 ```
 
 ### API エンドポイント
@@ -209,19 +255,14 @@ databricks apps logs genie-mcp-query-app
 databricks workspace list --debug
 ```
 
-## 認証方法
+## 環境変数一覧
 
-### 1. 自動検出（推奨）
-- ヘッダートークン、環境変数、SDK設定を自動的に検出
-
-### 2. ヘッダートークン
-- Databricks Apps環境での自動認証
-
-### 3. 環境変数
-- `DATABRICKS_TOKEN` 環境変数を使用
-
-### 4. 手動入力
-- ユーザーが直接トークンを入力
+| 環境変数 | 説明 | 設定例 |
+|----------|------|---------|
+| `DATABRICKS_HOST` | Databricksワークスペースのホスト名 | `https://adb-984752964297111.11.azuredatabricks.net` |
+| `DATABRICKS_ACCESS_TOKEN` | Databricksアクセストークン | `dapi7d670d3ea0c261e2...` |
+| `SERVING_ENDPOINT` | Model Serving Endpointの名前 | `databricks-claude-sonnet-4` |
+| `STREAMLIT_BROWSER_GATHER_USAGE_STATS` | Streamlit使用統計の収集を無効化 | `false` |
 
 ## 参考資料
 
