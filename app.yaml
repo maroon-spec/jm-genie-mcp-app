@@ -1,0 +1,23 @@
+command: [
+  "streamlit", 
+  "run",
+  "app.py"
+]
+
+env:
+  - name: "DATABRICKS_HOST"
+    value: "https://adb-984752964297111.11.azuredatabricks.net"
+  - name: "DATABRICKS_CLIENT_ID"
+    valueFrom: "secret/databricks/client-id"
+  - name: "DATABRICKS_CLIENT_SECRET"
+    valueFrom: "secret/databricks/client-secret"
+  - name: "DATABRICKS_WAREHOUSE_ID"
+    valueFrom: "sql-warehouse"
+  - name: "SERVING_ENDPOINT"
+    value: "jm-chatapp"
+  - name: STREAMLIT_BROWSER_GATHER_USAGE_STATS
+    value: "false"
+  - name: "DATABRICKS_ACCESS_TOKEN"
+    value: "<your-pat-token>"
+
+
