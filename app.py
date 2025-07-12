@@ -45,6 +45,12 @@ def extract_dataframe_from_genie_response(result: Dict[str, Any]) -> pd.DataFram
     content = result.get("content")
     if isinstance(content, list) and content and "text" in content[0]:
         text = content[0]["text"]
+        
+        # デバッグ: レスポンスの内容を確認
+        if not text or text.strip() == "":
+            st.warning("Genieのレスポンスが空です")
+            return pd.DataFrame()
+            
         try:
             parsed = json.loads(text)
             sr = parsed.get("statement_response")
@@ -85,8 +91,11 @@ def extract_dataframe_from_genie_response(result: Dict[str, Any]) -> pd.DataFram
                 return df
             # fallback: 旧ロジック
             #st.write("DEBUG: parsed text json", parsed)
+        except json.JSONDecodeError as e:
+            # JSONパースエラーを静かに処理
+            pass
         except Exception as e:
-            st.warning(f"JSONパースエラー: {e}")
+            st.warning(f"データ抽出エラー: {e}")
     return pd.DataFrame()
 
 def extract_query_from_genie_response(result: Dict[str, Any]) -> str:
@@ -94,18 +103,84 @@ def extract_query_from_genie_response(result: Dict[str, Any]) -> str:
     content = result.get("content")
     if isinstance(content, list) and content and "text" in content[0]:
         text = content[0]["text"]
+        if not text or text.strip() == "":
+            return ""
         try:
             parsed = json.loads(text)
+            # まず "query" フィールドを確認
+            if "query" in parsed:
+                return parsed["query"]
+            # フォールバック: statement_response内のstatement
             sr = parsed.get("statement_response")
             if sr and "statement" in sr:
                 return sr["statement"]
+        except json.JSONDecodeError:
+            # JSONパースエラーの場合は静かに処理
+            pass
         except Exception as e:
             st.warning(f"クエリー抽出エラー: {e}")
     return ""
 
+def extract_comment_from_genie_response(result: Dict[str, Any]) -> str:
+    """Genie MCPレスポンスからコメントを抽出"""
+    content = result.get("content")
+    if isinstance(content, list) and content and "text" in content[0]:
+        text = content[0]["text"]
+        if not text or text.strip() == "":
+            return ""
+        try:
+            parsed = json.loads(text)
+            # コメントまたは説明文を探す
+            if "comment" in parsed:
+                return parsed["comment"]
+            elif "description" in parsed:
+                return parsed["description"]
+            elif "explanation" in parsed:
+                return parsed["explanation"]
+            # statement_responseの中にコメントがある場合
+            sr = parsed.get("statement_response")
+            if sr:
+                if "comment" in sr:
+                    return sr["comment"]
+                elif "description" in sr:
+                    return sr["description"]
+        except json.JSONDecodeError:
+            # JSONパースエラーの場合は静かに処理
+            pass
+        except Exception as e:
+            st.warning(f"コメント抽出エラー: {e}")
+    
+    # JSONとして解析できない場合は、プレーンテキストとして扱う
+    if isinstance(content, list) and content and "text" in content[0]:
+        text = content[0]["text"]
+        # JSONデータの場合は、コメントとして返さない
+        if text and text.strip() != "" and not text.strip().startswith('{"'):
+            return text
+    
+    return ""
 
-def analyze_dataframe_with_llm(df: pd.DataFrame, question: str) -> str:
-    """DataFrameをLLMで分析してコメントを生成"""
+
+def format_sql_query(query: str) -> str:
+    """SQLクエリを見やすく改行して整形"""
+    if not query:
+        return ""
+    
+    # SQLキーワードで改行を追加
+    keywords = ['SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'HAVING', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'INNER JOIN', 'OUTER JOIN']
+    
+    formatted_query = query
+    for keyword in keywords:
+        # キーワードの前に改行を追加
+        formatted_query = formatted_query.replace(f' {keyword}', f'\n{keyword}')
+        formatted_query = formatted_query.replace(f' {keyword.lower()}', f'\n{keyword}')
+    
+    # 最初の改行を削除
+    formatted_query = formatted_query.lstrip('\n')
+    
+    return formatted_query
+
+def analyze_dataframe_with_llm(df: pd.DataFrame, question: str) -> tuple[str, list[str]]:
+    """DataFrameをLLMで分析してコメントと次の質問候補を生成"""
     try:
         # DataFrameを文字列形式に変換
         df_summary = f"""
@@ -123,16 +198,29 @@ def analyze_dataframe_with_llm(df: pd.DataFrame, question: str) -> str:
         
         # 分析プロンプトを作成
         analysis_prompt = f"""
-以下のデータについて、元の質問「{question}」に基づいて簡潔で有用な分析コメントを日本語で提供してください。
+あなたはデータアナリストです。以下のデータについて分析し、必ずJSON形式で回答してください。
+
+元の質問: {question}
 
 {df_summary}
 
-分析のポイント:
-1. データの主要な傾向や特徴
-2. 注目すべき数値や パターン
-3. ビジネス上の洞察や推奨事項
+回答は必ず以下のJSON形式にしてください（他の文章は一切含めないでください）：
 
-200文字以内で簡潔にまとめてください。
+{{
+  "analysis": "データの分析結果を200文字以内で日本語で記述",
+  "follow_up_questions": [
+    "このデータを見た人が次に聞きたくなる具体的な質問1",
+    "このデータを見た人が次に聞きたくなる具体的な質問2",
+    "このデータを見た人が次に聞きたくなる具体的な質問3"
+  ]
+}}
+
+分析では以下を含めてください:
+- データの主要な傾向や特徴
+- 注目すべき数値やパターン
+- ビジネス上の洞察
+
+follow_up_questionsは、実際にこのデータを見た人が詳しく知りたくなる実用的な質問にしてください。
 """
         
         # LLMに送信するメッセージ形式
@@ -142,12 +230,23 @@ def analyze_dataframe_with_llm(df: pd.DataFrame, question: str) -> str:
         response = query_endpoint(
             endpoint_name=os.getenv("SERVING_ENDPOINT"),
             messages=messages,
-            max_tokens=300,
+            max_tokens=500,
         )
         
-        return response["content"]
+        # JSONレスポンスをパース
+        try:
+            import json
+            result = json.loads(response["content"])
+            analysis = result.get("analysis", "分析結果を取得できませんでした")
+            follow_up_questions = result.get("follow_up_questions", [])
+            return analysis, follow_up_questions
+        except json.JSONDecodeError:
+            # JSONパースに失敗した場合は、レスポンス全体を分析結果として返す
+            return response["content"], []
+            
     except Exception as e:
-        return f"分析中にエラーが発生しました: {str(e)}"
+        return f"分析中にエラーが発生しました: {str(e)}", []
+
 
 def analyze_dataframe_with_followup(df: pd.DataFrame, original_question: str, followup_question: str) -> str:
     """DataFrameに対する追加質問に回答"""
@@ -199,75 +298,31 @@ def display_query_result():
     df = st.session_state.get("genie_df")
     question = st.session_state.get("genie_question", "")
     executed_query = st.session_state.get("genie_executed_query", "")
+    genie_comment = st.session_state.get("genie_comment", "")
     
-    # 実行されたクエリーを表示（折りたたみ）
-    if executed_query:
-        with st.expander("🔍 実行されたクエリー", expanded=False):
-            st.code(executed_query, language="sql")
+    # Genieのコメントを表示（コメントがある場合のみ）
+    if genie_comment and genie_comment.strip():
+        st.subheader("💬 Genieからの回答")
+        st.info(genie_comment)
     
     if df is not None and not df.empty:
+        # データ型を事前に取得（両方のカラムで使用するため）
+        numeric_columns = df.select_dtypes(include=['number']).columns
+        categorical_columns = df.select_dtypes(include=['object', 'category']).columns
+        datetime_columns = df.select_dtypes(include=['datetime64[ns]', 'datetime']).columns
+        
         col1, col2 = st.columns([1, 1])
         with col1:
             st.subheader("📊 データ")
             st.dataframe(df, use_container_width=True)
-        with col2:
-            st.subheader("📈 可視化")
-            chart_type = st.selectbox(
-                "チャートタイプ",
-                ["line", "bar", "scatter", "histogram", "pie"],
-                key="chart_type"
-            )
-            numeric_columns = df.select_dtypes(include=['number']).columns
-            categorical_columns = df.select_dtypes(include=['object', 'category']).columns
-            datetime_columns = df.select_dtypes(include=['datetime64[ns]', 'datetime']).columns
-            if chart_type == "line" and len(numeric_columns) > 0:
-                # 日付列がある場合はX軸として使用可能
-                if len(datetime_columns) > 0:
-                    x_axis_col = st.selectbox("X軸（時間軸）", datetime_columns)
-                    y_axis_cols = st.multiselect(
-                        "Y軸（数値）を選択",
-                        numeric_columns,
-                        default=list(numeric_columns[:3])
-                    )
-                    if x_axis_col and y_axis_cols:
-                        chart_data = df.set_index(x_axis_col)[y_axis_cols]
-                        st.line_chart(chart_data)
-                else:
-                    selected_columns = st.multiselect(
-                        "表示する列を選択",
-                        numeric_columns,
-                        default=list(numeric_columns[:3])
-                    )
-                    if selected_columns:
-                        st.line_chart(df[selected_columns])
-            elif chart_type == "bar" and len(numeric_columns) > 0:
-                # X軸の選択肢を準備（カテゴリ列と日付列）
-                x_axis_options = list(categorical_columns) + list(datetime_columns)
-                if len(x_axis_options) == 0:
-                    x_axis_options = df.columns.tolist()
-                x_col = st.selectbox("X軸（カテゴリ・日付）", x_axis_options)
-                y_col = st.selectbox("Y軸（数値）", numeric_columns)
-                if x_col and y_col:
-                    chart_data = df.groupby(x_col)[y_col].sum().reset_index()
-                    st.bar_chart(chart_data.set_index(x_col))
-            elif chart_type == "scatter" and len(numeric_columns) >= 2:
-                x_col = st.selectbox("X軸", numeric_columns, key="scatter_x")
-                y_col = st.selectbox("Y軸", [col for col in numeric_columns if col != x_col], key="scatter_y")
-                if x_col and y_col:
-                    st.scatter_chart(df, x=x_col, y=y_col)
-            elif chart_type == "histogram" and len(numeric_columns) > 0:
-                col = st.selectbox("列を選択", numeric_columns, key="histogram_col")
-                if col:
-                    st.histogram_chart(df[col])
-            elif chart_type == "pie" and len(categorical_columns) > 0:
-                category_col = st.selectbox("カテゴリ列", categorical_columns, key="pie_category")
-                if len(numeric_columns) > 0:
-                    value_col = st.selectbox("値列", numeric_columns, key="pie_value")
-                    if category_col and value_col:
-                        pie_data = df.groupby(category_col)[value_col].sum()
-                        st.write("円グラフデータ:")
-                        st.write(pie_data)
-                        st.bar_chart(pie_data)
+            
+            # 実行されたクエリーを表示（データの下に表示）
+            if executed_query:
+                with st.expander("🔍 実行されたクエリー", expanded=False):
+                    formatted_query = format_sql_query(executed_query)
+                    st.code(formatted_query, language="sql")
+            
+            # 統計情報を表示（クエリーの下に表示）
             with st.expander("📋 統計情報"):
                 st.write("**基本統計:**")
                 st.write(df.describe())
@@ -280,12 +335,115 @@ def display_query_result():
                     for col in datetime_columns:
                         st.write(f"- {col}: {df[col].min()} ～ {df[col].max()}")
         
+        with col2:
+            st.subheader("📈 可視化")
+            chart_type = st.selectbox(
+                "チャートタイプ",
+                ["line", "bar", "scatter", "histogram", "pie"],
+                key="chart_type"
+            )
+            
+            # Group By機能の追加
+            group_by_options = ["なし"] + list(categorical_columns) + list(datetime_columns)
+            group_by_col = st.selectbox("Group By（グループ化）", group_by_options, key="group_by_col")
+            if chart_type == "line" and len(numeric_columns) > 0:
+                # 日付列がある場合はX軸として使用可能
+                if len(datetime_columns) > 0:
+                    x_axis_col = st.selectbox("X軸（時間軸）", datetime_columns)
+                    y_axis_cols = st.multiselect(
+                        "Y軸（数値）を選択",
+                        numeric_columns,
+                        default=list(numeric_columns[:3])
+                    )
+                    if x_axis_col and y_axis_cols:
+                        if group_by_col != "なし":
+                            # Group Byありの場合
+                            chart_data = df.groupby([x_axis_col, group_by_col])[y_axis_cols].sum().reset_index()
+                            chart_data = chart_data.pivot(index=x_axis_col, columns=group_by_col, values=y_axis_cols[0])
+                            st.line_chart(chart_data)
+                        else:
+                            # Group Byなしの場合
+                            chart_data = df.set_index(x_axis_col)[y_axis_cols]
+                            st.line_chart(chart_data)
+                else:
+                    selected_columns = st.multiselect(
+                        "表示する列を選択",
+                        numeric_columns,
+                        default=list(numeric_columns[:3])
+                    )
+                    if selected_columns:
+                        if group_by_col != "なし":
+                            # Group Byありの場合
+                            chart_data = df.groupby(group_by_col)[selected_columns].sum()
+                            st.line_chart(chart_data)
+                        else:
+                            # Group Byなしの場合
+                            st.line_chart(df[selected_columns])
+            elif chart_type == "bar" and len(numeric_columns) > 0:
+                # X軸の選択肢を準備（カテゴリ列と日付列）
+                x_axis_options = list(categorical_columns) + list(datetime_columns)
+                if len(x_axis_options) == 0:
+                    x_axis_options = df.columns.tolist()
+                x_col = st.selectbox("X軸（カテゴリ・日付）", x_axis_options)
+                y_col = st.selectbox("Y軸（数値）", numeric_columns)
+                if x_col and y_col:
+                    if group_by_col != "なし" and group_by_col != x_col:
+                        # Group Byありの場合
+                        chart_data = df.groupby([x_col, group_by_col])[y_col].sum().reset_index()
+                        chart_data = chart_data.pivot(index=x_col, columns=group_by_col, values=y_col)
+                        st.bar_chart(chart_data)
+                    else:
+                        # Group Byなしの場合
+                        chart_data = df.groupby(x_col)[y_col].sum().reset_index()
+                        st.bar_chart(chart_data.set_index(x_col))
+            elif chart_type == "scatter" and len(numeric_columns) >= 2:
+                x_col = st.selectbox("X軸", numeric_columns, key="scatter_x")
+                y_col = st.selectbox("Y軸", [col for col in numeric_columns if col != x_col], key="scatter_y")
+                if x_col and y_col:
+                    if group_by_col != "なし":
+                        # Group Byありの場合は、色分けで表示
+                        st.write("散布図では、Group Byによる色分けは現在サポートされていません")
+                        st.scatter_chart(df, x=x_col, y=y_col)
+                    else:
+                        # Group Byなしの場合
+                        st.scatter_chart(df, x=x_col, y=y_col)
+            elif chart_type == "histogram" and len(numeric_columns) > 0:
+                col = st.selectbox("列を選択", numeric_columns, key="histogram_col")
+                if col:
+                    if group_by_col != "なし":
+                        # Group Byありの場合は、グループ別にヒストグラムを表示
+                        st.write("ヒストグラムでは、Group Byによる分割表示は現在サポートされていません")
+                        st.histogram_chart(df[col])
+                    else:
+                        # Group Byなしの場合
+                        st.histogram_chart(df[col])
+            elif chart_type == "pie" and len(categorical_columns) > 0:
+                category_col = st.selectbox("カテゴリ列", categorical_columns, key="pie_category")
+                if len(numeric_columns) > 0:
+                    value_col = st.selectbox("値列", numeric_columns, key="pie_value")
+                    if category_col and value_col:
+                        if group_by_col != "なし" and group_by_col != category_col:
+                            # Group Byありの場合は、複数の円グラフを表示
+                            st.write("円グラフでは、Group Byによる分割表示は現在サポートされていません")
+                            pie_data = df.groupby(category_col)[value_col].sum()
+                            st.write("円グラフデータ:")
+                            st.write(pie_data)
+                            st.bar_chart(pie_data)
+                        else:
+                            # Group Byなしの場合
+                            pie_data = df.groupby(category_col)[value_col].sum()
+                            st.write("円グラフデータ:")
+                            st.write(pie_data)
+                            st.bar_chart(pie_data)
+        
+        
         # AI分析コメントを表示
         st.subheader("🤖 AI分析コメント")
         if st.button("分析を実行", key="analyze_button"):
             with st.spinner("データを分析中..."):
-                analysis_comment = analyze_dataframe_with_llm(df, question)
+                analysis_comment, follow_up_questions = analyze_dataframe_with_llm(df, question)
                 st.session_state["analysis_comment"] = analysis_comment
+                st.session_state["follow_up_questions"] = follow_up_questions
                 # 分析チャット履歴を初期化
                 if "analysis_messages" not in st.session_state:
                     st.session_state["analysis_messages"] = []
@@ -297,7 +455,34 @@ def display_query_result():
             st.info(st.session_state["analysis_comment"])
             
             # 分析結果に対する追加質問機能
-            st.subheader("💭 分析結果について追加で質問")
+            st.subheader("💭 AIに追加で質問")
+            
+            # AIが生成したサンプル質問の表示
+            if "follow_up_questions" in st.session_state and st.session_state["follow_up_questions"]:
+                st.markdown("**次におすすめの質問：**")
+                sample_questions = st.session_state["follow_up_questions"]
+            else:
+                st.markdown("**よく使われる質問例：**")
+                sample_questions = [
+                    "このデータの主要な課題は何ですか？",
+                    "改善すべき点を具体的に教えてください",
+                    "注目すべき特徴やパターンはありますか？"
+                ]
+            
+            cols = st.columns(len(sample_questions))
+            for i, sample_q in enumerate(sample_questions):
+                with cols[i]:
+                    if st.button(f"📝 {sample_q}", key=f"sample_q_{i}"):
+                        # サンプル質問をチャット履歴に追加
+                        if "analysis_messages" not in st.session_state:
+                            st.session_state["analysis_messages"] = []
+                        st.session_state["analysis_messages"].append({"role": "user", "content": sample_q})
+                        
+                        # AIの応答を生成
+                        with st.spinner("回答を生成中..."):
+                            follow_up_response = analyze_dataframe_with_followup(df, question, sample_q)
+                            st.session_state["analysis_messages"].append({"role": "assistant", "content": follow_up_response})
+                        st.rerun()
             
             # 分析チャット履歴の初期化
             if "analysis_messages" not in st.session_state:
@@ -329,12 +514,13 @@ def display_query_result():
             if st.button("🗑️ 分析チャットをクリア", key="clear_analysis_chat"):
                 st.session_state["analysis_messages"] = []
                 st.rerun()
+        
     #else:
     #    st.info("表形式で表示できるデータがありません")
 
 def genie_mcp_page(genie_space_id: str):
     """Genie MCP問い合わせページ"""
-    st.title("🔍 Genie アドバイザーアプリ")
+    st.title("🔍 Genie アドバイザー")
     st.markdown("Databricks Genie を使用してデータを取得し、AIとチャットで分析します")
     workspace_hostname, username = get_workspace_info()
     if not workspace_hostname:
@@ -366,7 +552,7 @@ def genie_mcp_page(genie_space_id: str):
     st.subheader("💬 データを取得：Genie に質問してデータを取得してください")
     question = st.text_area(
         "Genieへの質問",
-        value="月別の問い合わせ数",
+        value="月別の支払い額の合計とステータスを教えて",
         height=100,
         placeholder="Genieスペースに対して質問を入力してください..."
     )
@@ -384,14 +570,16 @@ def genie_mcp_page(genie_space_id: str):
                 with GenieMCPClient(workspace_hostname, genie_space_id, access_token) as genie_client:
                     with st.spinner("Genieに質問中..."):
                         response = genie_client.query_genie(question)
-                        #st.write("Genie response:", response)
+                        #st.write("DEBUG: Genie response:", response)
                         result = GenieMCPResponseParser.parse_response(response)
-                        #st.write("Parsed result:", result)
+                        #st.write("DEBUG: Parsed result:", result)
                         df = extract_dataframe_from_genie_response(result)
                         executed_query = extract_query_from_genie_response(result)
+                        genie_comment = extract_comment_from_genie_response(result)
                         st.session_state["genie_df"] = df
                         st.session_state["genie_question"] = question
                         st.session_state["genie_executed_query"] = executed_query
+                        st.session_state["genie_comment"] = genie_comment
             except Exception as e:
                 st.error(f"Genieへの問い合わせでエラー: {e}")
         else:
